@@ -1,0 +1,55 @@
+name: Deploy
+
+on:
+  workflow_dispatch:
+    inputs:
+      stage:
+        description: Deployment stage
+        required: true
+        default: dev
+        type: choice
+        options:
+          - dev
+          - prod
+  push:
+    branches: [develop]
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: ${{ github.event.inputs.stage || 'dev' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Set up Java 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+      - name: Set up AWS SAM
+        uses: aws-actions/setup-sam@v2
+      - name: Configure AWS credentials with OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION || 'us-east-1' }}
+      - name: Build Quarkus Lambda package
+        run: mvn --batch-mode --no-transfer-progress package -DskipTests
+        env:
+          PERSISTENCE: dynamodb
+          NOTIFICATION_SENDER: ses
+      - name: Deploy
+        run: >-
+          sam deploy
+          --template-file template.yaml
+          --stack-name sus-agenda-${{ github.event.inputs.stage || 'dev' }}
+          --capabilities CAPABILITY_IAM
+          --resolve-s3
+          --no-confirm-changeset
+          --no-fail-on-empty-changeset
+          --parameter-overrides Stage=${{ github.event.inputs.stage || 'dev' }} JwtSecret=${{ secrets.JWT_SECRET }}

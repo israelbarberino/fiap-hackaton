@@ -1,0 +1,345 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: SUS Agenda+ serverless MVP
+
+Globals:
+  Function:
+    Runtime: java21
+    MemorySize: 1024
+    Timeout: 30
+    Handler: io.quarkus.amazon.lambda.runtime.QuarkusStreamHandler::handleRequest
+    Environment:
+      Variables:
+        STAGE: !Ref Stage
+        TIME_ZONE: America/Sao_Paulo
+        APPOINTMENTS_TABLE_NAME: !Ref AppointmentsTable
+        NOTIFICATIONS_TABLE_NAME: !Ref NotificationsTable
+        SLOTS_TABLE_NAME: !Ref AppointmentSlotsTable
+        USERS_TABLE_NAME: !Ref UsersTable
+        PATIENTS_TABLE_NAME: !Ref PatientsTable
+        MEDICAL_RECORDS_TABLE_NAME: !Ref MedicalRecordsTable
+        DYNAMODB_APPOINTMENTS_TABLE: !Ref AppointmentsTable
+        DYNAMODB_NOTIFICATIONS_TABLE: !Ref NotificationsTable
+        DYNAMODB_SLOTS_TABLE: !Ref AppointmentSlotsTable
+        DYNAMODB_USERS_TABLE: !Ref UsersTable
+        DYNAMODB_PATIENTS_TABLE: !Ref PatientsTable
+        DYNAMODB_MEDICAL_RECORDS_TABLE: !Ref MedicalRecordsTable
+        DYNAMODB_PROFESSIONALS_TABLE: !Ref ProfessionalsTable
+        DYNAMODB_HEALTH_UNITS_TABLE: !Ref HealthUnitsTable
+        EVENT_BUS_NAME: !Ref SusAgendaEventBus
+        PERSISTENCE: dynamodb
+        NOTIFICATION_SENDER: !Ref NotificationSenderMode
+        SES_FROM_EMAIL: !Ref SesFromEmail
+        JWT_SECRET: !Ref JwtSecret
+
+Parameters:
+  Stage:
+    Type: String
+    Default: dev
+    AllowedValues:
+      - dev
+      - prod
+  JwtSecret:
+    Type: String
+    NoEcho: true
+    Default: local-development-secret-change-me
+  NotificationSenderMode:
+    Type: String
+    Default: log
+    AllowedValues:
+      - log
+      - ses
+  SesFromEmail:
+    Type: String
+    Default: ''
+
+Resources:
+  ApiFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: target/function.zip
+      Role: !GetAtt ApiExecutionRole.Arn
+      Events:
+        Api:
+          Type: HttpApi
+          Properties:
+            Path: /{proxy+}
+            Method: ANY
+
+  ReminderProcessorFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: target/function.zip
+      Role: !GetAtt ReminderExecutionRole.Arn
+      Handler: br.com.fiap.susagenda.infrastructure.notification.ReminderLambdaHandler::handleRequest
+      Events:
+        DailySchedule:
+          Type: ScheduleV2
+          Properties:
+            ScheduleExpression: cron(0 0 * * ? *)
+            ScheduleExpressionTimezone: America/Sao_Paulo
+            Name: !Sub sus-agenda-reminder-${Stage}
+            Description: Processa lembretes de agendamentos para cinco dias
+
+  AppointmentsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: appointmentId
+          AttributeType: S
+        - AttributeName: appointmentDate
+          AttributeType: S
+      KeySchema:
+        - AttributeName: appointmentId
+          KeyType: HASH
+      GlobalSecondaryIndexes:
+        - IndexName: appointment-date-index
+          KeySchema:
+            - AttributeName: appointmentDate
+              KeyType: HASH
+            - AttributeName: appointmentId
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+      SSESpecification:
+        SSEEnabled: true
+
+  NotificationsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: notificationId
+          AttributeType: S
+      KeySchema:
+        - AttributeName: notificationId
+          KeyType: HASH
+      SSESpecification:
+        SSEEnabled: true
+
+  AppointmentSlotsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: slotId
+          AttributeType: S
+        - AttributeName: professionalId
+          AttributeType: S
+        - AttributeName: slotKey
+          AttributeType: S
+      KeySchema:
+        - AttributeName: slotId
+          KeyType: HASH
+      GlobalSecondaryIndexes:
+        - IndexName: professional-slot-index
+          KeySchema:
+            - AttributeName: professionalId
+              KeyType: HASH
+            - AttributeName: slotKey
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+      SSESpecification:
+        SSEEnabled: true
+
+  UsersTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: userId
+          AttributeType: S
+        - AttributeName: cpf
+          AttributeType: S
+        - AttributeName: email
+          AttributeType: S
+      KeySchema:
+        - AttributeName: userId
+          KeyType: HASH
+      GlobalSecondaryIndexes:
+        - IndexName: cpf-index
+          KeySchema:
+            - AttributeName: cpf
+              KeyType: HASH
+          Projection:
+            ProjectionType: ALL
+        - IndexName: email-index
+          KeySchema:
+            - AttributeName: email
+              KeyType: HASH
+          Projection:
+            ProjectionType: ALL
+      SSESpecification:
+        SSEEnabled: true
+
+  PatientsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: patientId
+          AttributeType: S
+        - AttributeName: cpf
+          AttributeType: S
+      KeySchema:
+        - AttributeName: patientId
+          KeyType: HASH
+      GlobalSecondaryIndexes:
+        - IndexName: cpf-index
+          KeySchema:
+            - AttributeName: cpf
+              KeyType: HASH
+          Projection:
+            ProjectionType: ALL
+      SSESpecification:
+        SSEEnabled: true
+
+  MedicalRecordsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: entryId
+          AttributeType: S
+        - AttributeName: patientId
+          AttributeType: S
+        - AttributeName: createdAt
+          AttributeType: S
+      KeySchema:
+        - AttributeName: entryId
+          KeyType: HASH
+      GlobalSecondaryIndexes:
+        - IndexName: patient-created-index
+          KeySchema:
+            - AttributeName: patientId
+              KeyType: HASH
+            - AttributeName: createdAt
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+      SSESpecification:
+        SSEEnabled: true
+
+  SusAgendaEventBus:
+    Type: AWS::Events::EventBus
+    Properties:
+      Name: !Sub sus-agenda-${Stage}
+
+  ApiExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: ApiRuntimePolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: '*'
+              - Effect: Allow
+                Action: dynamodb:*
+                Resource:
+                  - !GetAtt AppointmentsTable.Arn
+                  - !GetAtt NotificationsTable.Arn
+                  - !GetAtt AppointmentSlotsTable.Arn
+                  - !GetAtt UsersTable.Arn
+                  - !GetAtt PatientsTable.Arn
+                  - !GetAtt MedicalRecordsTable.Arn
+                  - !GetAtt ProfessionalsTable.Arn
+                  - !GetAtt HealthUnitsTable.Arn
+                  - !Sub '${AppointmentSlotsTable.Arn}/index/*'
+                  - !Sub '${AppointmentsTable.Arn}/index/*'
+                  - !Sub '${UsersTable.Arn}/index/*'
+                  - !Sub '${PatientsTable.Arn}/index/*'
+                  - !Sub '${MedicalRecordsTable.Arn}/index/*'
+              - Effect: Allow
+                Action: events:PutEvents
+                Resource: !GetAtt SusAgendaEventBus.Arn
+
+  ReminderExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: ReminderRuntimePolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                  - dynamodb:Query
+                  - dynamodb:PutItem
+                Resource:
+                  - !GetAtt AppointmentsTable.Arn
+                  - !GetAtt NotificationsTable.Arn
+                  - !GetAtt UsersTable.Arn
+                  - !GetAtt PatientsTable.Arn
+                  - !GetAtt ProfessionalsTable.Arn
+                  - !GetAtt HealthUnitsTable.Arn
+                  - !Sub '${AppointmentsTable.Arn}/index/*'
+                  - !Sub '${UsersTable.Arn}/index/*'
+                  - !Sub '${PatientsTable.Arn}/index/*'
+              - Effect: Allow
+                Action:
+                  - ses:SendEmail
+                  - ses:SendRawEmail
+                Resource: '*'
+              - Effect: Allow
+                Action: events:PutEvents
+                Resource: !GetAtt SusAgendaEventBus.Arn
+
+  ProfessionalsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: professionalId
+          AttributeType: S
+      KeySchema:
+        - AttributeName: professionalId
+          KeyType: HASH
+      SSESpecification:
+        SSEEnabled: true
+
+  HealthUnitsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: unitId
+          AttributeType: S
+      KeySchema:
+        - AttributeName: unitId
+          KeyType: HASH
+      SSESpecification:
+        SSEEnabled: true
+
+Outputs:
+  ApiUrl:
+    Description: API endpoint
+    Value: !Sub https://${ServerlessHttpApi}.execute-api.${AWS::Region}.amazonaws.com
